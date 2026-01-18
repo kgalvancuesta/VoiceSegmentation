@@ -38,31 +38,25 @@ from sklearn.decomposition import PCA
 from sklearn.mixture import GaussianMixture
 
 
-# ---- Fixed project layout ----
 INPUT_WAV_PATH = os.path.join("data", "sample.wav")
 EMB_NPZ_PATH = os.path.join("output", "embeddings.npz")
 OUTPUT_DIR = "output"
 OUT_SPK0 = os.path.join(OUTPUT_DIR, "speaker_0.wav")
 OUT_SPK1 = os.path.join(OUTPUT_DIR, "speaker_1.wav")
 
-# ---- Feature / model params ----
 N_SPEAKERS = 2
-PCA_DIMS = 64              # reduce 192 -> 64 (robust for GMM)
-PCA_WHITEN = False         # keep False unless you know you want whitening
+PCA_DIMS = 64
+PCA_WHITEN = False
 
 GMM_N_INIT = 5
-GMM_REG_COVAR = 1e-4       # stabilizes when speakers are close
-GMM_COV_TYPE = "full"      # 'diag' is faster but often worse
+GMM_REG_COVAR = 1e-4
+GMM_COV_TYPE = "full"
 
-# ---- Temporal smoothing (Viterbi) ----
-# Bigger value => fewer speaker switches.
-# Interpreted as log self-transition bonus added each step.
 SWITCH_PENALTY = 2.0
 
-# ---- Segment cleanup / audio write ----
-MIN_SEGMENT_S = 0.20       # drop tiny fragments
-PAD_S = 0.02               # pad each segment edges
-FADE_MS = 8                # fade per extracted chunk to avoid clicks
+MIN_SEGMENT_S = 0.20
+PAD_S = 0.02
+FADE_MS = 8
 
 
 @dataclass(frozen=True)
@@ -73,7 +67,7 @@ class Segment:
 
 
 def load_audio_mono(path: str) -> Tuple[torch.Tensor, int]:
-    wav, sr = torchaudio.load(path)  # [C, T]
+    wav, sr = torchaudio.load(path)
     wav = wav.to(torch.float32)
     if wav.shape[0] > 1:
         wav = wav.mean(dim=0)
@@ -127,15 +121,12 @@ def viterbi_decode(log_likelihood: np.ndarray, switch_penalty: float) -> np.ndar
     T, K = log_likelihood.shape
     assert K == 2
 
-    # Transition log-probs (unnormalized; we only need relative differences)
-    # Staying: +switch_penalty, switching: +0
     trans = np.array([[switch_penalty, 0.0],
                       [0.0, switch_penalty]], dtype=np.float64)
 
     dp = np.empty((T, K), dtype=np.float64)
     bp = np.empty((T, K), dtype=np.int32)
 
-    # init with equal priors
     dp[0] = log_likelihood[0]
     bp[0] = 0
 
@@ -237,7 +228,6 @@ def main() -> None:
     if not os.path.exists(EMB_NPZ_PATH):
         raise FileNotFoundError(f"Missing embeddings NPZ: {EMB_NPZ_PATH} (run extract_embeddings.py first)")
 
-    # Load data
     wav, sr = load_audio_mono(INPUT_WAV_PATH)
     audio_len_s = float(wav.numel()) / sr
 
@@ -249,24 +239,18 @@ def main() -> None:
     window_s, hop_s = infer_window_and_hop(start_s, end_s)
     print(f"Inferred window_s={window_s:.3f}s hop_s={hop_s:.3f}s | windows={len(start_s)}")
 
-    # Fit PCA+GMM
     gmm, z = fit_gmm_with_pca(emb)
 
-    # Per-window log-likelihoods
-    ll = gmm.score_samples(z)  # total mixture ll, not per component
-    # We need per-component responsibilities -> use predict_proba with log safety:
-    resp = gmm.predict_proba(z).astype(np.float64)  # [N,2]
+    ll = gmm.score_samples(z)
+    resp = gmm.predict_proba(z).astype(np.float64)
     eps = 1e-12
-    log_resp = np.log(np.clip(resp, eps, 1.0))      # proxy for per-component evidence
+    log_resp = np.log(np.clip(resp, eps, 1.0))
 
-    # Viterbi smoothing (turn-taking prior: speakers stick for a while)
     path = viterbi_decode(log_resp, switch_penalty=SWITCH_PENALTY)
 
-    # Quick diagnostics
     u, c = np.unique(path, return_counts=True)
     print("Post-Viterbi counts:", dict(zip(u.tolist(), c.tolist())))
 
-    # Build segments and write WAVs
     segs = windows_to_segments(start_s, end_s, path, min_segment_s=MIN_SEGMENT_S)
     if not segs:
         raise RuntimeError("No segments after merging. Try lowering MIN_SEGMENT_S.")

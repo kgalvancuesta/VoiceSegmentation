@@ -210,4 +210,6 @@ data/*
 output/*
 !data/
 !output/
+!data/.gitkeep
+!output/.gitkeep
 .DS_STORE

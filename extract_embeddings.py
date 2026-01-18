@@ -46,29 +46,23 @@ from tqdm import tqdm
 from speechbrain.inference.speaker import EncoderClassifier
 
 
-# ---- Fixed paths (per your request) ----
 INPUT_WAV_PATH = os.path.join("data", "sample.wav")
 OUTPUT_DIR = "output"
 OUT_PREFIX = os.path.join(OUTPUT_DIR, "embeddings")
 
-# ---- Audio / model params ----
 TARGET_SR = 16000
 
-# VAD parameters (tweak later if needed)
 USE_VAD = True
 VAD_THRESHOLD = 0.5
 MIN_SPEECH_S = 0.25
 MIN_SILENCE_S = 0.20
 MERGE_GAP_S = 0.15
 
-# Windowing parameters
 WINDOW_S = 1.5
 HOP_S = 0.75
 
-# Embedding batching
 BATCH_SIZE = 32
 
-# Device: Apple Metal (MPS) only
 EMBED_DEVICE_STR = "mps"
 
 
@@ -80,12 +74,12 @@ class Segment:
 
 def load_audio_mono(path: str) -> Tuple[torch.Tensor, int]:
     """Load audio and convert to mono float32 tensor shaped [T]."""
-    wav, sr = torchaudio.load(path)  # [C, T]
+    wav, sr = torchaudio.load(path)
     wav = wav.to(torch.float32)
     if wav.shape[0] > 1:
-        wav = wav.mean(dim=0)  # [T]
+        wav = wav.mean(dim=0)
     else:
-        wav = wav.squeeze(0)   # [T]
+        wav = wav.squeeze(0)
     return wav, sr
 
 
@@ -125,7 +119,6 @@ def silero_vad_segments(
     """
     assert sr == 16000, "Silero VAD expects 16kHz audio."
 
-    # Download via torch.hub on first run
     model, utils = torch.hub.load(
         repo_or_dir="snakers4/silero-vad",
         model="silero_vad",
@@ -135,7 +128,6 @@ def silero_vad_segments(
     )
     (get_speech_timestamps, _, _, _, _) = utils
 
-    # Force CPU for VAD stability on macOS/MPS
     model = model.to(torch.device("cpu"))
     audio_cpu = wav_16k.detach().cpu()
 
@@ -182,7 +174,6 @@ def extract_embeddings_ecapa(
     """
     assert sr == TARGET_SR
 
-    # Downloads pretrained model on first run
     classifier = EncoderClassifier.from_hparams(
         source="speechbrain/spkrec-ecapa-voxceleb",
         run_opts={"device": str(device)},
@@ -205,14 +196,13 @@ def extract_embeddings_ecapa(
         )
 
         with torch.no_grad():
-            emb = classifier.encode_batch(batch_padded)  # [B, 1, D]
-            emb = emb.squeeze(1)                        # [B, D]
-            emb = torch.nn.functional.normalize(emb, p=2, dim=-1)  # cosine-ready
+            emb = classifier.encode_batch(batch_padded)
+            emb = emb.squeeze(1)
+            emb = torch.nn.functional.normalize(emb, p=2, dim=-1)
 
         embeddings.append(emb.detach().cpu().numpy().astype(np.float32))
 
     if not embeddings:
-        # ECAPA on VoxCeleb is typically 192-dim, but keep this safe.
         return np.zeros((0, 192), dtype=np.float32)
 
     return np.concatenate(embeddings, axis=0)
@@ -225,7 +215,6 @@ def save_outputs(out_prefix: str, windows: List[Segment], emb: np.ndarray) -> No
     ends = np.array([w.end_s for w in windows], dtype=np.float32)
     durs = ends - starts
 
-    # NPZ for easy load later
     np.savez_compressed(
         out_prefix + ".npz",
         start_s=starts,
@@ -234,7 +223,6 @@ def save_outputs(out_prefix: str, windows: List[Segment], emb: np.ndarray) -> No
         embeddings=emb,
     )
 
-    # CSV for inspection / quick work (no fragmentation)
     base = pd.DataFrame({"start_s": starts, "end_s": ends, "duration_s": durs})
 
     if emb.size > 0:
@@ -249,7 +237,6 @@ def save_outputs(out_prefix: str, windows: List[Segment], emb: np.ndarray) -> No
     df.to_csv(out_prefix + ".csv", index=False)
 
 def main() -> None:
-    # Enforce MPS-only operation (per your request)
     if not torch.backends.mps.is_built():
         raise RuntimeError("PyTorch was not built with MPS support. Install a macOS/MPS-enabled PyTorch build.")
     if not torch.backends.mps.is_available():
